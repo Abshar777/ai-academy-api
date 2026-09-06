@@ -131,7 +131,7 @@ authRoutes.post("/otp/verify", async (c) => {
 
   return c.json({
     accessToken: await issueAccessToken(user),
-    user: { id: user._id.toHexString(), email: user.email, name: user.name, preferredLang: user.preferredLang },
+    user: { id: user._id.toHexString(), email: user.email, name: user.name, phone: user.phone, preferredLang: user.preferredLang },
   });
 });
 
@@ -157,6 +157,7 @@ authRoutes.post("/refresh", async (c) => {
       id: result.user._id!.toHexString(),
       email: result.user.email,
       name: result.user.name,
+      phone: result.user.phone,
       preferredLang: result.user.preferredLang,
     },
   });
@@ -198,6 +199,6 @@ authRoutes.post("/handoff", async (c) => {
 
   return c.json({
     accessToken: await issueAccessToken(user),
-    user: { id: user._id.toHexString(), email: user.email, name: user.name, preferredLang: user.preferredLang },
+    user: { id: user._id.toHexString(), email: user.email, name: user.name, phone: user.phone, preferredLang: user.preferredLang },
   });
 });

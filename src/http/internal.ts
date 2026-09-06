@@ -67,10 +67,21 @@ internalRoutes.post("/grant", async (c) => {
   const orderRef = String(body?.orderRef ?? "").trim();
   const source = String(body?.source ?? "");
 
+  const name = typeof body?.name === "string" ? body.name.trim() : undefined;
+  const phone = typeof body?.phone === "string" ? body.phone.trim() : "";
+
   if (!looksLikeEmail(email)) return c.json({ error: "A valid email is required" }, 400);
   if (!orderRef) return c.json({ error: "orderRef is required" }, 400);
   if (!SOURCES.includes(source as Entitlement["source"])) {
     return c.json({ error: `source must be one of ${SOURCES.join(", ")}` }, 400);
+  }
+
+  /* Buyers must carry a phone number: it's rendered as a forensic video
+     watermark downstream (v2 player + LMS), so a purchase can't provision
+     an account without one. "manual" is an admin grant, not a buyer — exempt. */
+  const BUYER_SOURCES: Entitlement["source"][] = ["razorpay", "abzer", "coupon"];
+  if (BUYER_SOURCES.includes(source as Entitlement["source"]) && phone.replace(/\D/g, "").length < 7) {
+    return c.json({ error: "A valid phone number is required" }, 400);
   }
 
   const db = await getDb();
@@ -79,8 +90,8 @@ internalRoutes.post("/grant", async (c) => {
   if (!course?._id) return c.json({ error: `No course with slug "${slug}"` }, 404);
 
   const user = await upsertUserByEmail(email, {
-    name: typeof body?.name === "string" ? body.name.trim() : undefined,
-    phone: typeof body?.phone === "string" ? body.phone.trim() : undefined,
+    name,
+    phone: phone || undefined,
     country: typeof body?.country === "string" ? body.country.trim() : undefined,
   });
 
@@ -96,8 +107,8 @@ internalRoutes.post("/grant", async (c) => {
      and-forget — a slow or down LMS must never fail the purchase grant. */
   void mirrorToLms({
     email: user.email,
-    name: typeof body?.name === "string" ? body.name.trim() : user.name,
-    phone: typeof body?.phone === "string" ? body.phone.trim() : user.phone,
+    name: name ?? user.name,
+    phone: phone || user.phone,
     orderId: orderRef,
     amount: typeof body?.amount === "number" ? body.amount : undefined,
     currency: typeof body?.currency === "string" ? body.currency : undefined,
