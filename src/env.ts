@@ -21,6 +21,12 @@ export const env = {
    *  AUTH_SECRET so it can be rotated without signing every user out. */
   internalSecret: () => required("INTERNAL_API_SECRET"),
 
+  /** LMS purchase-mirror: after a grant, POST the buyer to the LMS so they also
+   *  get an LMS account + both-language course access + a login-link email.
+   *  Both must be set to enable it; unset → mirroring is skipped silently. */
+  lmsPurchaseUrl: () => process.env.LMS_PURCHASE_URL || undefined,
+  lmsSecret:      () => process.env.LMS_S2S_SECRET || undefined,
+
   /** Origins allowed to call this API with credentials. The marketing site in
    *  production, plus whatever the site runs on locally. */
   allowedOrigins: (): string[] =>

@@ -15,6 +15,27 @@ const DEFAULT_COURSE_SLUG = "ai-academy";
 
 const SOURCES: Entitlement["source"][] = ["razorpay", "abzer", "coupon", "manual"];
 
+/** Best-effort mirror of a purchase to the LMS. Never throws — logs and moves
+ *  on, so the outcome of the grant never depends on the LMS being reachable. */
+async function mirrorToLms(payload: {
+  email: string; name?: string; phone?: string; orderId: string; amount?: number; currency?: string;
+}): Promise<void> {
+  const url = env.lmsPurchaseUrl();
+  const secret = env.lmsSecret();
+  if (!url || !secret) return; // integration not configured
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AIA-Secret": secret },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) console.error("[lms-mirror] non-2xx:", res.status, await res.text().catch(() => ""));
+    else console.log("[lms-mirror] provisioned in LMS:", payload.email, payload.orderId);
+  } catch (err) {
+    console.error("[lms-mirror] failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 export const internalRoutes = new Hono();
 
 /**
@@ -68,6 +89,18 @@ internalRoutes.post("/grant", async (c) => {
     courseId: course._id,
     source: source as Entitlement["source"],
     orderRef,
+  });
+
+  /* Mirror the purchase into the LMS (separate system): create/approve the
+     student there and grant both-language access + a login-link email. Fire-
+     and-forget — a slow or down LMS must never fail the purchase grant. */
+  void mirrorToLms({
+    email: user.email,
+    name: typeof body?.name === "string" ? body.name.trim() : user.name,
+    phone: typeof body?.phone === "string" ? body.phone.trim() : user.phone,
+    orderId: orderRef,
+    amount: typeof body?.amount === "number" ? body.amount : undefined,
+    currency: typeof body?.currency === "string" ? body.currency : undefined,
   });
 
   return c.json({
