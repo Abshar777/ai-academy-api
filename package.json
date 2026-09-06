@@ -1,0 +1,29 @@
+{
+  "name": "academy-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "import:content": "bun run scripts/import-content.ts",
+    "verify:content": "bun run scripts/verify.ts",
+    "verify:pairs": "bun run scripts/validate-pairs.ts",
+    "typecheck": "tsc --noEmit",
+    "test:api": "bun run scripts/smoke-test.ts",
+    "check:smtp": "bun run scripts/check-smtp.ts",
+    "check:db": "bun run scripts/check-db.ts",
+    "check:r2": "bun run scripts/check-r2.ts"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.13.7",
+    "mongodb": "^6.21.0",
+    "nodemailer": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "@types/nodemailer": "^8.0.1",
+    "typescript": "^5.9.2"
+  }
+}
