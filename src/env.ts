@@ -59,11 +59,18 @@ export const env = {
     };
   },
 
-  /** How long a playback URL stays valid. Long enough to watch a 25-minute
-   *  episode and pause for a coffee; short enough that a shared link dies. */
+  /**
+   * How long a playback URL stays valid.
+   *
+   * One hour rather than the six it used to be: this is the window in which a
+   * copied link is worth anything to whoever it was copied to. It is shorter
+   * than plenty of viewing sessions on purpose — the player re-mints a URL
+   * before this runs out, and again if playback errors, so a long session
+   * costs a background request rather than a broken video.
+   */
   videoUrlTtl: () => {
     const value = Number(process.env.R2_VIDEO_URL_TTL);
-    return Number.isFinite(value) && value >= 60 && value <= 86_400 ? value : 6 * 60 * 60;
+    return Number.isFinite(value) && value >= 60 && value <= 86_400 ? value : 60 * 60;
   },
 
   smtp: () => {
