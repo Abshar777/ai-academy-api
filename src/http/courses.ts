@@ -5,18 +5,35 @@ import { COURSES, EPISODES, MODULES, PROGRESS, type Course, type Episode, type M
 import { hasEntitlement } from "../auth/access.ts";
 import { optionalAuth, type Vars } from "../auth/middleware.ts";
 import { playbackUrl } from "../media/r2.ts";
+import { canSignPlayback, hlsUrl } from "../media/stream.ts";
 import { env } from "../env.ts";
 
 export const courseRoutes = new Hono<{ Variables: Partial<Vars> }>();
 
-/** Swaps each stored URL for a signed, expiring one. Both languages at once,
- *  so switching language mid-episode needs no second round trip. */
+/**
+ * Swaps each stored file for a signed, expiring address. Both languages at
+ * once, so switching language mid-episode needs no second round trip.
+ *
+ * A file migrated to Cloudflare Stream is served as a signed HLS manifest;
+ * anything not migrated — or migrated before the signing key was configured —
+ * still serves the signed R2 original. The two coexist on purpose, so the
+ * catalogue can move across file by file rather than in one flip.
+ */
 async function signedSources(media: Episode["media"]) {
   const entries = await Promise.all(
-    Object.entries(media).map(async ([lang, value]) => [
-      lang,
-      { url: await playbackUrl(value.url), durationSec: value.durationSec },
-    ]),
+    Object.entries(media).map(async ([lang, value]) => {
+      if (value.streamUid && canSignPlayback()) {
+        try {
+          return [
+            lang,
+            { url: hlsUrl(value.streamUid, env.videoUrlTtl()), durationSec: value.durationSec, type: "hls" },
+          ];
+        } catch (err) {
+          console.error(`[stream] could not sign ${value.streamUid}, serving the R2 original`, err);
+        }
+      }
+      return [lang, { url: await playbackUrl(value.url), durationSec: value.durationSec, type: "mp4" }];
+    }),
   );
   return Object.fromEntries(entries);
 }

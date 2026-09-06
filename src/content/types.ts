@@ -20,10 +20,20 @@ export type Localized = {
 };
 
 export type Media = {
+  /**
+   * The original in R2. Stays put after a Stream migration: it is the archive,
+   * and the fallback for anything not migrated yet.
+   */
   url: string;
   /** Probed from the file itself — the exported durationMins were wrong often
    *  enough (a 25-minute episode filed as 1 minute) to be worth ignoring. */
   durationSec: number;
+  /**
+   * Cloudflare Stream video id, once this file has been migrated. Present
+   * means playback goes out as a signed HLS manifest; absent means it still
+   * serves the signed R2 file, so the two can coexist mid-migration.
+   */
+  streamUid?: string;
 };
 
 export type Course = {

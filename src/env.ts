@@ -60,6 +60,29 @@ export const env = {
   },
 
   /**
+   * Cloudflare Stream. Same Cloudflare account as R2, so the account id is
+   * shared; the API token is separate because R2's keys are S3 credentials and
+   * cannot call Cloudflare's own API.
+   *
+   * Returns null until it is configured, and every caller falls back to
+   * serving the R2 original — so the migration can run file by file rather
+   * than as one flip.
+   */
+  stream: () => {
+    const { CF_STREAM_API_TOKEN, CF_STREAM_CUSTOMER_CODE, R2_ACCOUNT_ID } = process.env;
+    if (!CF_STREAM_API_TOKEN || !R2_ACCOUNT_ID) return null;
+    return {
+      accountId: R2_ACCOUNT_ID,
+      apiToken: CF_STREAM_API_TOKEN,
+      /** The customer-<code> subdomain playback is served from. The migration
+       *  script reports it after the first upload. */
+      customerCode: CF_STREAM_CUSTOMER_CODE ?? "",
+      signingKeyId: process.env.CF_STREAM_SIGNING_KEY_ID ?? "",
+      signingKeyPem: process.env.CF_STREAM_SIGNING_KEY_PEM ?? "",
+    };
+  },
+
+  /**
    * How long a playback URL stays valid.
    *
    * One hour rather than the six it used to be: this is the window in which a

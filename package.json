@@ -13,7 +13,8 @@
     "test:api": "bun run scripts/smoke-test.ts",
     "check:smtp": "bun run scripts/check-smtp.ts",
     "check:db": "bun run scripts/check-db.ts",
-    "check:r2": "bun run scripts/check-r2.ts"
+    "check:r2": "bun run scripts/check-r2.ts",
+    "stream:migrate": "bun run scripts/stream-migrate.ts"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",

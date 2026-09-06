@@ -50,6 +50,40 @@ function layout(preheader: string, bodyHtml: string): string {
 </html>`;
 }
 
+/** One-time sign-in LINK (post-purchase handoff). Same never-throws contract as
+ *  the code mail: a failure is logged, never surfaced to the recipient. */
+export async function sendLoginLink(email: string, link: string): Promise<{ sent: boolean }> {
+  const transport = getTransporter();
+  const smtp = env.smtp();
+  if (!transport || !smtp) {
+    console.warn("[mailer] SMTP not configured — login link not sent to", email);
+    return { sent: false };
+  }
+  try {
+    await transport.sendMail({
+      from: smtp.from,
+      to: email,
+      subject: "Your Delta AI Academy sign-in link",
+      html: layout(
+        "Your access is ready — tap to sign in to Delta AI Academy.",
+        `<h2 style="margin:0 0 4px;font-size:22px;letter-spacing:-0.01em;">You're in 🎉</h2>
+         <p style="margin:0 0 24px;color:#444;">Your course access is ready. Tap the button below to sign in — no password needed. This link signs you in once and expires soon.</p>
+         <p style="margin:0 0 24px;">
+           <a href="${link}" style="display:inline-block;background-color:${BRAND_INK};color:${BRAND_LIME};text-decoration:none;font-weight:600;font-size:15px;padding:14px 26px;border-radius:12px;">Sign in to Delta AI Academy</a>
+         </p>
+         <p style="margin:0 0 8px;color:#555;">Or paste this link into your browser:</p>
+         <p style="margin:0 0 24px;word-break:break-all;font-size:13px;color:#0057b8;">${link}</p>
+         <p style="margin:0;color:#555;">Didn't buy anything? You can ignore this email — the link only works for this address.</p>`,
+      ),
+      text: `Sign in to Delta AI Academy: ${link}`,
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error("[mailer] Failed to send login link", err);
+    return { sent: false };
+  }
+}
+
 /** Never throws: a mail failure must not turn into a 500 that tells the caller
  *  whether the address exists. It's logged and the request still succeeds. */
 export async function sendSignInCode(email: string, code: string): Promise<{ sent: boolean }> {
