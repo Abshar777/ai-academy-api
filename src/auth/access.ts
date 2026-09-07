@@ -15,6 +15,15 @@ export async function listEntitlements(userId: ObjectId): Promise<Entitlement[]>
   return db.collection<Entitlement>(ENTITLEMENTS).find({ userId }).toArray();
 }
 
+/** Whether this user has bought anything at all. Sign-in is gated on this: the
+ *  course area is for buyers, so an email with no entitlement can't hold a
+ *  session (the free preview lives on the public marketing pages instead). */
+export async function hasAnyEntitlement(userId: ObjectId): Promise<boolean> {
+  const db = await getDb();
+  const found = await db.collection<Entitlement>(ENTITLEMENTS).findOne({ userId });
+  return found !== null;
+}
+
 /**
  * Records that a payment bought a course. Idempotent on `orderRef`, which is
  * the payment id — a webhook that retries, or a browser callback racing the

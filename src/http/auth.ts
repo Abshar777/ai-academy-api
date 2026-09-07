@@ -6,7 +6,8 @@ import { sendSignInCode } from "../email/mailer.ts";
 import { looksLikeEmail, normalizeEmail } from "../auth/crypto.ts";
 import { createChallenge, verifyChallenge } from "../auth/otp.ts";
 import { redeemHandoff } from "../auth/handoff.ts";
-import { upsertUserByEmail } from "../auth/users.ts";
+import { findUserByEmail, upsertUserByEmail } from "../auth/users.ts";
+import { hasAnyEntitlement } from "../auth/access.ts";
 import { REFRESH_TTL, createSession, issueAccessToken, revokeSession, rotateSession } from "../auth/tokens.ts";
 
 const REFRESH_COOKIE = "da_refresh";
@@ -124,7 +125,16 @@ authRoutes.post("/otp/verify", async (c) => {
   if (result === "too-many-attempts") return c.json({ error: "Too many wrong codes. Ask for a new one." }, 400);
   if (result !== "ok") return c.json({ error: "That code isn't right. Check it and try again." }, 400);
 
-  const user = await upsertUserByEmail(email, {}, { touchLogin: true });
+  /* Sign-in is for buyers. An email with no purchase gets no session and no
+     account is created for it — the course area stays closed to non-buyers,
+     while the free preview remains open on the public marketing pages. The
+     code was still verified first, so this reveals buyer status only to
+     someone who already controls the inbox. */
+  const user = await findUserByEmail(email);
+  if (!user?._id || !(await hasAnyEntitlement(user._id))) {
+    return c.json({ error: "We couldn't find a course for this email. Enrol first, then sign in." }, 403);
+  }
+  await upsertUserByEmail(email, {}, { touchLogin: true });
 
   const refresh = await createSession(user._id, requestInfo(c));
   setRefreshCookie(c, refresh);
@@ -148,6 +158,16 @@ authRoutes.post("/refresh", async (c) => {
         ? "Your session was signed out for safety. Sign in again."
         : "Your session expired — sign in again";
     return c.json({ error: message }, 401);
+  }
+
+  /* A session is only as valid as the entitlement behind it: a buyer whose
+     access was refunded or revoked — or a non-buyer who signed in before the
+     gate existed — loses the session on their next refresh rather than lingering
+     until the 30-day token expires. */
+  if (!(await hasAnyEntitlement(result.user._id!))) {
+    await revokeSession(result.token);
+    clearAuthCookies(c);
+    return c.json({ error: "Your access has ended. Enrol to continue." }, 401);
   }
 
   setRefreshCookie(c, result.token);

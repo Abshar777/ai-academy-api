@@ -14,6 +14,14 @@ export type PersistedUser = User & { _id: ObjectId };
  * overwrite it — and so two requests racing here settle on one row rather than
  * one clobbering the other. The unique index on `email` is the backstop.
  */
+/** Looks up an account without creating one. Used by the sign-in gate, which
+ *  must not bring a non-buyer's account into existence just by them trying. */
+export async function findUserByEmail(email: string): Promise<PersistedUser | null> {
+  const db = await getDb();
+  const user = await db.collection<User>(USERS).findOne({ email });
+  return (user as PersistedUser | null) ?? null;
+}
+
 export async function upsertUserByEmail(
   email: string,
   details: { name?: string; phone?: string; country?: string } = {},
