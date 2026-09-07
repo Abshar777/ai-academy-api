@@ -1,6 +1,6 @@
 import { getDb } from "./db.ts";
 import { COURSES, EPISODES, MODULES, PROGRESS } from "./content/types.ts";
-import { ENTITLEMENTS, HANDOFFS, OTPS, SESSIONS, USERS } from "./auth/types.ts";
+import { DEVICES, ENTITLEMENTS, HANDOFFS, OTPS, SESSIONS, USERS } from "./auth/types.ts";
 
 /**
  * Created once at boot. Two of these are correctness, not performance: the
@@ -39,5 +39,11 @@ export async function ensureIndexes(): Promise<void> {
 
     db.collection(ENTITLEMENTS).createIndex({ orderRef: 1 }, { unique: true }),
     db.collection(ENTITLEMENTS).createIndex({ userId: 1, courseId: 1 }),
+
+    // One row per browser per user — the device whitelist upsert depends on it.
+    db.collection(DEVICES).createIndex({ userId: 1, deviceId: 1 }, { unique: true }),
+    db.collection(DEVICES).createIndex({ userId: 1, status: 1 }),
+    // The admin "pending device requests" list, newest first.
+    db.collection(DEVICES).createIndex({ status: 1, createdAt: -1 }),
   ]);
 }

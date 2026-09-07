@@ -48,6 +48,34 @@ export type Session = {
   createdAt: Date;
 };
 
+/**
+ * A browser a buyer signs in on, for the two-device whitelist.
+ *
+ * Identity is a random `deviceId` kept in a long-lived cookie on the browser —
+ * per browser profile, not hardware. The first device a buyer uses is
+ * auto-approved as their main; a second is a `pending` request an admin
+ * approves; a third is refused until an admin frees a slot. Enforced at every
+ * sign-in and every refresh, so revoking a device ends its session promptly.
+ */
+export type DeviceStatus = "approved" | "pending" | "revoked";
+export type Device = {
+  _id?: ObjectId;
+  userId: ObjectId;
+  deviceId: string;
+  status: DeviceStatus;
+  /** The auto-approved first device. At most one per user. */
+  isMain: boolean;
+  /** A human label derived from the user agent, e.g. "Chrome on macOS". */
+  label?: string;
+  userAgent?: string;
+  ip?: string;
+  createdAt: Date;
+  approvedAt?: Date | null;
+  /** Which admin approved it (identifier string), for the audit trail. */
+  approvedBy?: string | null;
+  lastSeenAt?: Date;
+};
+
 /** What a payment bought. Written by the purchase bridge in phase 3. */
 export type Entitlement = {
   _id?: ObjectId;
@@ -81,3 +109,4 @@ export const HANDOFFS = "handoffs";
 export const OTPS = "otps";
 export const SESSIONS = "sessions";
 export const ENTITLEMENTS = "entitlements";
+export const DEVICES = "devices";

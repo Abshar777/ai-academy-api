@@ -3,11 +3,12 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { env } from "../env.ts";
 import { rateLimit } from "../rate-limit.ts";
 import { sendSignInCode } from "../email/mailer.ts";
-import { looksLikeEmail, normalizeEmail } from "../auth/crypto.ts";
+import { looksLikeEmail, normalizeEmail, randomToken } from "../auth/crypto.ts";
 import { createChallenge, verifyChallenge } from "../auth/otp.ts";
 import { redeemHandoff } from "../auth/handoff.ts";
 import { findUserByEmail, upsertUserByEmail } from "../auth/users.ts";
 import { hasAnyEntitlement } from "../auth/access.ts";
+import { isDeviceApproved, resolveDeviceForLogin, type DeviceOutcome } from "../auth/devices.ts";
 import { REFRESH_TTL, createSession, issueAccessToken, revokeSession, rotateSession } from "../auth/tokens.ts";
 
 const REFRESH_COOKIE = "da_refresh";
@@ -23,6 +24,58 @@ const REFRESH_COOKIE = "da_refresh";
  * nothing but a hidden popup.
  */
 const HINT_COOKIE = "da_session";
+
+/**
+ * Identifies the browser for the two-device whitelist. Long-lived and httpOnly:
+ * it must outlast any single session so the same browser keeps its identity
+ * across sign-outs and re-logins, and it is never read by client script. It
+ * carries no authority on its own — it only names which device row to check.
+ */
+const DEVICE_COOKIE = "da_device";
+const DEVICE_TTL = 400 * 24 * 60 * 60; // 400 days (Chrome's max cookie lifetime)
+
+/** Reads the device id from its cookie, minting and setting one on first
+ *  contact so a blocked (pending) browser still keeps a stable identity for the
+ *  admin to approve. Returns the id to check against the whitelist. */
+function resolveDeviceId(c: Parameters<typeof setCookie>[0]): string {
+  const existing = getCookie(c, DEVICE_COOKIE);
+  if (existing) return existing;
+  const deviceId = randomToken();
+  setCookie(c, DEVICE_COOKIE, deviceId, {
+    httpOnly: true,
+    secure: env.isProduction(),
+    sameSite: "Lax",
+    domain: env.cookieDomain(),
+    path: "/",
+    maxAge: DEVICE_TTL,
+  });
+  return deviceId;
+}
+
+/** The buyer-friendly message and machine code for a blocked device, so the
+ *  sign-in page can tell "waiting for approval" from "too many devices". */
+function deviceBlock(reason: Exclude<DeviceOutcome, { ok: true }>["reason"]): {
+  error: string;
+  code: string;
+} {
+  switch (reason) {
+    case "pending":
+      return {
+        code: "DEVICE_PENDING",
+        error: "This is a new device. An admin needs to approve it before you can watch — you'll be able to sign in once they do.",
+      };
+    case "limit":
+      return {
+        code: "DEVICE_LIMIT",
+        error: "You're already set up on two devices. Ask an admin to remove one before adding this device.",
+      };
+    case "revoked":
+      return {
+        code: "DEVICE_REVOKED",
+        error: "This device's access was removed. Contact support if you think that's a mistake.",
+      };
+  }
+}
 
 /**
  * SameSite=Lax is enough here even though the API answers on its own subdomain:
@@ -134,6 +187,14 @@ authRoutes.post("/otp/verify", async (c) => {
   if (!user?._id || !(await hasAnyEntitlement(user._id))) {
     return c.json({ error: "We couldn't find a course for this email. Enrol first, then sign in." }, 403);
   }
+
+  /* Two-device whitelist: the first browser is auto-approved, a second needs an
+     admin, a third is refused. The device cookie is set regardless, so a blocked
+     browser keeps a stable identity for the admin to approve. */
+  const deviceId = resolveDeviceId(c);
+  const outcome = await resolveDeviceForLogin(user._id, deviceId, requestInfo(c));
+  if (!outcome.ok) return c.json(deviceBlock(outcome.reason), 403);
+
   await upsertUserByEmail(email, {}, { touchLogin: true });
 
   const refresh = await createSession(user._id, requestInfo(c));
@@ -168,6 +229,16 @@ authRoutes.post("/refresh", async (c) => {
     await revokeSession(result.token);
     clearAuthCookies(c);
     return c.json({ error: "Your access has ended. Enrol to continue." }, 401);
+  }
+
+  /* The session lives only while its browser stays an approved device: an admin
+     who revokes a device ends its session on the next refresh, rather than
+     waiting out the 30-day token. A missing device cookie counts as unknown. */
+  const deviceId = getCookie(c, DEVICE_COOKIE) ?? "";
+  if (!(await isDeviceApproved(result.user._id!, deviceId))) {
+    await revokeSession(result.token);
+    clearAuthCookies(c);
+    return c.json({ error: "This device is no longer approved. Sign in again.", code: "DEVICE_REVOKED" }, 401);
   }
 
   setRefreshCookie(c, result.token);
@@ -213,6 +284,13 @@ authRoutes.post("/handoff", async (c) => {
   if (!user?._id) {
     return c.json({ error: "This sign-in link has already been used or expired. Sign in with your email." }, 401);
   }
+
+  /* Same two-device whitelist as code sign-in: a buyer opening the course on a
+     second browser straight after purchase is a pending device an admin
+     approves, not an automatic pass. */
+  const deviceId = resolveDeviceId(c);
+  const outcome = await resolveDeviceForLogin(user._id, deviceId, requestInfo(c));
+  if (!outcome.ok) return c.json(deviceBlock(outcome.reason), 403);
 
   const refresh = await createSession(user._id, requestInfo(c));
   setRefreshCookie(c, refresh);
