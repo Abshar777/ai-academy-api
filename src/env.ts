@@ -27,6 +27,12 @@ export const env = {
   lmsPurchaseUrl: () => process.env.LMS_PURCHASE_URL || undefined,
   lmsSecret:      () => process.env.LMS_S2S_SECRET || undefined,
 
+  /** Where to email a "new device to approve" notice, and the admin Devices
+   *  page it links to. Both optional — unset → the notification is skipped
+   *  silently (the pending device still waits for approval either way). */
+  adminNotifyEmail: () => process.env.ADMIN_NOTIFY_EMAIL || undefined,
+  adminDevicesUrl:  () => process.env.ADMIN_DEVICES_URL || undefined,
+
   /** Origins allowed to call this API with credentials. The marketing site in
    *  production, plus whatever the site runs on locally. */
   allowedOrigins: (): string[] =>

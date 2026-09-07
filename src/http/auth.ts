@@ -9,6 +9,7 @@ import { redeemHandoff } from "../auth/handoff.ts";
 import { findUserByEmail, upsertUserByEmail } from "../auth/users.ts";
 import { hasAnyEntitlement } from "../auth/access.ts";
 import { isDeviceApproved, resolveDeviceForLogin, type DeviceOutcome } from "../auth/devices.ts";
+import { sendDeviceApprovalRequest } from "../email/mailer.ts";
 import { REFRESH_TTL, createSession, issueAccessToken, revokeSession, rotateSession } from "../auth/tokens.ts";
 
 const REFRESH_COOKIE = "da_refresh";
@@ -75,6 +76,16 @@ function deviceBlock(reason: Exclude<DeviceOutcome, { ok: true }>["reason"]): {
         error: "This device's access was removed. Contact support if you think that's a mistake.",
       };
   }
+}
+
+/** Emails the admin the first time a browser is blocked, so a pending request
+ *  doesn't sit unseen. Best-effort and env-gated: unset ADMIN_NOTIFY_EMAIL → no
+ *  notice. Fire-and-forget — never delays or fails the sign-in response. */
+function maybeNotifyDeviceRequest(buyerEmail: string, outcome: DeviceOutcome): void {
+  if (outcome.ok || outcome.reason === "revoked" || !outcome.created) return;
+  const adminEmail = env.adminNotifyEmail();
+  if (!adminEmail) return;
+  void sendDeviceApprovalRequest(adminEmail, buyerEmail, outcome.label, env.adminDevicesUrl()).catch(() => {});
 }
 
 /**
@@ -193,7 +204,10 @@ authRoutes.post("/otp/verify", async (c) => {
      browser keeps a stable identity for the admin to approve. */
   const deviceId = resolveDeviceId(c);
   const outcome = await resolveDeviceForLogin(user._id, deviceId, requestInfo(c));
-  if (!outcome.ok) return c.json(deviceBlock(outcome.reason), 403);
+  if (!outcome.ok) {
+    maybeNotifyDeviceRequest(user.email, outcome);
+    return c.json(deviceBlock(outcome.reason), 403);
+  }
 
   await upsertUserByEmail(email, {}, { touchLogin: true });
 
@@ -290,7 +304,10 @@ authRoutes.post("/handoff", async (c) => {
      approves, not an automatic pass. */
   const deviceId = resolveDeviceId(c);
   const outcome = await resolveDeviceForLogin(user._id, deviceId, requestInfo(c));
-  if (!outcome.ok) return c.json(deviceBlock(outcome.reason), 403);
+  if (!outcome.ok) {
+    maybeNotifyDeviceRequest(user.email, outcome);
+    return c.json(deviceBlock(outcome.reason), 403);
+  }
 
   const refresh = await createSession(user._id, requestInfo(c));
   setRefreshCookie(c, refresh);

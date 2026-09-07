@@ -9,10 +9,9 @@ export const MAX_APPROVED_DEVICES = 2;
 export type DeviceOutcome =
   /** Signed in — an approved device (known, or the auto-approved first one). */
   | { ok: true; device: Device }
-  /** This browser is a pending request an admin must approve. */
-  | { ok: false; reason: "pending" }
-  /** Two devices are already approved; an admin must remove one first. */
-  | { ok: false; reason: "limit" }
+  /** A pending/over-limit request. `created` is true only the first time the
+   *  browser is recorded, so the caller notifies admins once; `label` names it. */
+  | { ok: false; reason: "pending" | "limit"; created: boolean; label: string }
   /** This browser's access was explicitly removed. */
   | { ok: false; reason: "revoked" };
 
@@ -63,7 +62,7 @@ export async function resolveDeviceForLogin(
       { $set: { lastSeenAt: now, userAgent: info.userAgent, ip: info.ip } },
     );
     if (existing.status === "approved") return { ok: true, device: existing };
-    return { ok: false, reason: "pending" };
+    return { ok: false, reason: "pending", created: false, label: existing.label ?? "Unknown device" };
   }
 
   const approvedCount = await devices.countDocuments({ userId, status: "approved" });
@@ -94,7 +93,7 @@ export async function resolveDeviceForLogin(
       const row = await devices.findOne({ userId, deviceId });
       if (row?.status === "approved") return { ok: true, device: row };
       if (row?.status === "revoked") return { ok: false, reason: "revoked" };
-      return { ok: false, reason: "pending" };
+      return { ok: false, reason: "pending", created: false, label: row?.label ?? "Unknown device" };
     }
     throw err;
   }
@@ -102,9 +101,10 @@ export async function resolveDeviceForLogin(
   if (isFirst) return { ok: true, device };
   // A brand-new device beyond the first: pending if a slot is open, otherwise
   // reported as a hard limit (the row still exists for the admin to see).
+  // `created: true` — this sign-in first recorded it, so notify admins once.
   return approvedCount >= MAX_APPROVED_DEVICES
-    ? { ok: false, reason: "limit" }
-    : { ok: false, reason: "pending" };
+    ? { ok: false, reason: "limit", created: true, label: device.label ?? "Unknown device" }
+    : { ok: false, reason: "pending", created: true, label: device.label ?? "Unknown device" };
 }
 
 /**

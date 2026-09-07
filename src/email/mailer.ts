@@ -86,6 +86,46 @@ export async function sendLoginLink(email: string, link: string): Promise<{ sent
 
 /** Never throws: a mail failure must not turn into a 500 that tells the caller
  *  whether the address exists. It's logged and the request still succeeds. */
+/** Tells the admin a buyer is waiting on a second-device approval, so it doesn't
+ *  sit unseen. Best-effort — a mail failure never blocks the sign-in. */
+export async function sendDeviceApprovalRequest(
+  adminEmail: string,
+  buyerEmail: string,
+  deviceLabel: string,
+  reviewUrl?: string,
+): Promise<{ sent: boolean }> {
+  const transport = getTransporter();
+  const smtp = env.smtp();
+  if (!transport || !smtp) {
+    console.warn("[mailer] SMTP not configured — device-approval notice not sent");
+    return { sent: false };
+  }
+
+  const button = reviewUrl
+    ? `<p style="margin:0 0 24px;"><a href="${reviewUrl}" style="display:inline-block;background:${BRAND_INK};color:#fff;font-weight:600;padding:12px 24px;border-radius:12px;text-decoration:none;">Review devices</a></p>`
+    : "";
+
+  try {
+    await transport.sendMail({
+      from: smtp.from,
+      to: adminEmail,
+      subject: "A buyer is waiting for device approval",
+      html: layout(
+        `${buyerEmail} is trying to sign in on a second device (${deviceLabel}) and needs approval.`,
+        `<h2 style="margin:0 0 4px;font-size:22px;letter-spacing:-0.01em;">New device to review</h2>
+         <p style="margin:0 0 24px;color:#444;"><strong>${buyerEmail}</strong> is trying to sign in on a second device (${deviceLabel}). Buyers are limited to two devices, so this one needs approval before they can watch on it.</p>
+         ${button}
+         <p style="margin:0;color:#555;">Don't recognise it? Revoke the device from the same page — its session ends within minutes.</p>`,
+      ),
+      text: `${buyerEmail} is waiting for approval on a second device (${deviceLabel}).${reviewUrl ? ` Review: ${reviewUrl}` : ""}`,
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error("[mailer] Failed to send device-approval notice", err);
+    return { sent: false };
+  }
+}
+
 export async function sendSignInCode(email: string, code: string): Promise<{ sent: boolean }> {
   const transport = getTransporter();
   const smtp = env.smtp();
