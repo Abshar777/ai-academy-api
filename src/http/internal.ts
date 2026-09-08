@@ -13,7 +13,7 @@ import type { Entitlement } from "../auth/types.ts";
  *  caller can name a different slug if that changes. */
 const DEFAULT_COURSE_SLUG = "ai-academy";
 
-const SOURCES: Entitlement["source"][] = ["razorpay", "abzer", "coupon", "manual"];
+const SOURCES: Entitlement["source"][] = ["razorpay", "stripe", "abzer", "coupon", "manual"];
 
 /** Best-effort mirror of a purchase to the LMS. Never throws — logs and moves
  *  on, so the outcome of the grant never depends on the LMS being reachable. */

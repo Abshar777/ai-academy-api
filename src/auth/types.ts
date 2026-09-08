@@ -81,7 +81,7 @@ export type Entitlement = {
   _id?: ObjectId;
   userId: ObjectId;
   courseId: ObjectId;
-  source: "razorpay" | "abzer" | "coupon" | "manual";
+  source: "razorpay" | "stripe" | "abzer" | "coupon" | "manual";
   /** Payment or order id — unique, so a webhook retry can't grant twice. */
   orderRef: string;
   grantedAt: Date;
