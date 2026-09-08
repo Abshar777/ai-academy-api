@@ -119,4 +119,20 @@ export const env = {
       from: process.env.SMTP_FROM || SMTP_USER,
     };
   },
+
+  /** Optional second mailbox, tried when the primary fails or is throttled (see
+   *  mailer.ts). Same key names as the LMS backend so the two can share config:
+   *  SMTP_BACKUP_HOST/PORT/USER/PASS + SMTP_BACKUP_FROM|SMTP_BACKUP_EMAIL_FROM.
+   *  Unset → there's just the primary. */
+  smtpBackup: () => {
+    const { SMTP_BACKUP_HOST, SMTP_BACKUP_PORT, SMTP_BACKUP_USER, SMTP_BACKUP_PASS } = process.env;
+    if (!SMTP_BACKUP_HOST || !SMTP_BACKUP_USER || !SMTP_BACKUP_PASS) return null;
+    return {
+      host: SMTP_BACKUP_HOST,
+      port: Number(SMTP_BACKUP_PORT) || 587,
+      user: SMTP_BACKUP_USER,
+      pass: SMTP_BACKUP_PASS,
+      from: process.env.SMTP_BACKUP_FROM || process.env.SMTP_BACKUP_EMAIL_FROM || SMTP_BACKUP_USER,
+    };
+  },
 };

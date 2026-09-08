@@ -11,19 +11,61 @@ import { env } from "../env.ts";
 const BRAND_LIME = "#d3fb52";
 const BRAND_INK = "#171717";
 
-let transporter: Transporter | null = null;
+type Mailbox = { name: string; transporter: Transporter; from: string };
 
-function getTransporter(): Transporter | null {
-  if (transporter) return transporter;
-  const smtp = env.smtp();
-  if (!smtp) return null;
-  transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.port === 465,
-    auth: { user: smtp.user, pass: smtp.pass },
-  });
-  return transporter;
+let mailboxes: Mailbox[] | null = null;
+
+/** The configured mailboxes in priority order: primary, then the optional
+ *  backup. Built once and cached. */
+function getMailboxes(): Mailbox[] {
+  if (mailboxes) return mailboxes;
+  const build = (cfg: NonNullable<ReturnType<typeof env.smtp>>): Transporter =>
+    nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.port === 465,
+      auth: { user: cfg.user, pass: cfg.pass },
+    });
+  const boxes: Mailbox[] = [];
+  const primary = env.smtp();
+  if (primary) boxes.push({ name: "primary", transporter: build(primary), from: primary.from });
+  const backup = env.smtpBackup();
+  if (backup) boxes.push({ name: "backup", transporter: build(backup), from: backup.from });
+  mailboxes = boxes;
+  return boxes;
+}
+
+type Msg = { to: string; subject: string; html: string; text: string };
+
+/**
+ * Sends a message, trying each mailbox (primary then backup) with one quick
+ * retry each — so a single account being throttled by the provider doesn't stop
+ * the mail. Never throws: the outcome is reported as { sent }, and the caller
+ * decides what to tell the recipient (sign-in flows never surface a mail
+ * failure as an error).
+ */
+async function deliver(msg: Msg, label: string): Promise<{ sent: boolean }> {
+  const boxes = getMailboxes();
+  if (!boxes.length) {
+    console.warn(`[mailer] SMTP not configured — ${label} not sent to`, msg.to);
+    return { sent: false };
+  }
+  for (const box of boxes) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await box.transporter.sendMail({ from: box.from, ...msg });
+        if (box.name !== "primary" || attempt > 1) {
+          console.info(`[mailer] ${label} sent via ${box.name} (attempt ${attempt})`);
+        }
+        return { sent: true };
+      } catch (err) {
+        console.error(`[mailer] ${label} via ${box.name} failed (attempt ${attempt}):`, (err as Error)?.message ?? err);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
+  console.error(`[mailer] ${label} — all mailboxes failed for`, msg.to);
+  return { sent: false };
 }
 
 function layout(preheader: string, bodyHtml: string): string {
@@ -53,15 +95,8 @@ function layout(preheader: string, bodyHtml: string): string {
 /** One-time sign-in LINK (post-purchase handoff). Same never-throws contract as
  *  the code mail: a failure is logged, never surfaced to the recipient. */
 export async function sendLoginLink(email: string, link: string): Promise<{ sent: boolean }> {
-  const transport = getTransporter();
-  const smtp = env.smtp();
-  if (!transport || !smtp) {
-    console.warn("[mailer] SMTP not configured — login link not sent to", email);
-    return { sent: false };
-  }
-  try {
-    await transport.sendMail({
-      from: smtp.from,
+  return deliver(
+    {
       to: email,
       subject: "Your Delta AI Academy sign-in link",
       html: layout(
@@ -76,12 +111,9 @@ export async function sendLoginLink(email: string, link: string): Promise<{ sent
          <p style="margin:0;color:#555;">Didn't buy anything? You can ignore this email — the link only works for this address.</p>`,
       ),
       text: `Sign in to Delta AI Academy: ${link}`,
-    });
-    return { sent: true };
-  } catch (err) {
-    console.error("[mailer] Failed to send login link", err);
-    return { sent: false };
-  }
+    },
+    "login link",
+  );
 }
 
 /** Never throws: a mail failure must not turn into a 500 that tells the caller
@@ -94,20 +126,12 @@ export async function sendDeviceApprovalRequest(
   deviceLabel: string,
   reviewUrl?: string,
 ): Promise<{ sent: boolean }> {
-  const transport = getTransporter();
-  const smtp = env.smtp();
-  if (!transport || !smtp) {
-    console.warn("[mailer] SMTP not configured — device-approval notice not sent");
-    return { sent: false };
-  }
-
   const button = reviewUrl
     ? `<p style="margin:0 0 24px;"><a href="${reviewUrl}" style="display:inline-block;background:${BRAND_INK};color:#fff;font-weight:600;padding:12px 24px;border-radius:12px;text-decoration:none;">Review devices</a></p>`
     : "";
 
-  try {
-    await transport.sendMail({
-      from: smtp.from,
+  return deliver(
+    {
       to: adminEmail,
       subject: "A buyer is waiting for device approval",
       html: layout(
@@ -118,25 +142,14 @@ export async function sendDeviceApprovalRequest(
          <p style="margin:0;color:#555;">Don't recognise it? Revoke the device from the same page — its session ends within minutes.</p>`,
       ),
       text: `${buyerEmail} is waiting for approval on a second device (${deviceLabel}).${reviewUrl ? ` Review: ${reviewUrl}` : ""}`,
-    });
-    return { sent: true };
-  } catch (err) {
-    console.error("[mailer] Failed to send device-approval notice", err);
-    return { sent: false };
-  }
+    },
+    "device-approval notice",
+  );
 }
 
 export async function sendSignInCode(email: string, code: string): Promise<{ sent: boolean }> {
-  const transport = getTransporter();
-  const smtp = env.smtp();
-  if (!transport || !smtp) {
-    console.warn("[mailer] SMTP not configured — sign-in code not sent to", email);
-    return { sent: false };
-  }
-
-  try {
-    await transport.sendMail({
-      from: smtp.from,
+  return deliver(
+    {
       to: email,
       subject: `${code} is your Delta AI Academy sign-in code`,
       html: layout(
@@ -147,10 +160,7 @@ export async function sendSignInCode(email: string, code: string): Promise<{ sen
          <p style="margin:0;color:#555;">Didn't try to sign in? You can ignore this email — nobody can get in without the code.</p>`,
       ),
       text: `Your Delta AI Academy sign-in code is ${code}. It expires in 10 minutes.`,
-    });
-    return { sent: true };
-  } catch (err) {
-    console.error("[mailer] Failed to send sign-in code", err);
-    return { sent: false };
-  }
+    },
+    "sign-in code",
+  );
 }
