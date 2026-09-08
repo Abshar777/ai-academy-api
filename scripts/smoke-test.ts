@@ -11,6 +11,7 @@
 import { getDb, closeDb } from "../src/db.ts";
 import { USERS, SESSIONS, OTPS, ENTITLEMENTS, HANDOFFS } from "../src/auth/types.ts";
 import { PROGRESS } from "../src/content/types.ts";
+import { hash } from "../src/auth/crypto.ts";
 
 const BASE = process.env.API_URL ?? "http://localhost:6112";
 const stamp = Date.now();
@@ -131,12 +132,29 @@ const cookieB = refreshed.setCookie;
 check("refresh returns a new access token", refreshed.status === 200 && !!refreshed.body?.accessToken);
 check("refresh rotates the cookie", !!cookieB && cookieB !== cookieA);
 
-const reused = await post("/auth/refresh", undefined, cookieA!);
-check("re-using the old refresh token is rejected", reused.status === 401);
+// A token rotated moments ago still answers. Two page loads can each ask for
+// a session before either one's cookie lands, and signing someone out for
+// navigating quickly is worse than the replay window this leaves open.
+const racing = await post("/auth/refresh", undefined, cookieA!);
+check("a just-rotated token still works, so a page-load race can't sign you out",
+  racing.status === 200, `got ${racing.status}`);
 
-const afterReuse = await post("/auth/refresh", undefined, cookieB!);
-check("the reuse revokes the whole session family", afterReuse.status === 401,
-  `expected 401, got ${afterReuse.status}`);
+// Replayed long after the fact it is treated as theft. Ageing the revocation
+// past the leeway is the only way to test that without waiting it out.
+{
+  const db = await getDb();
+  const rawA = (cookieA ?? "").split("=")[1] ?? "";
+  await db.collection(SESSIONS).updateMany(
+    { tokenHash: hash(rawA) },
+    { $set: { revokedAt: new Date(Date.now() - 5 * 60_000) } },
+  );
+  const replayed = await post("/auth/refresh", undefined, cookieA!);
+  check("an old token replayed later is rejected", replayed.status === 401, `got ${replayed.status}`);
+
+  const afterReuse = await post("/auth/refresh", undefined, racing.setCookie ?? cookieB!);
+  check("and that replay revokes the whole session family", afterReuse.status === 401,
+    `expected 401, got ${afterReuse.status}`);
+}
 
 // -------------------------------------------------------------- rate limit
 console.log("\n  rate limiting");

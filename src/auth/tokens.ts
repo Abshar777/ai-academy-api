@@ -10,6 +10,21 @@ import { SESSIONS, USERS, type Session, type User } from "./types.ts";
 const ACCESS_TTL_SECONDS = 15 * 60;
 const REFRESH_TTL_DAYS = 30;
 
+/**
+ * How long a just-rotated refresh token still answers.
+ *
+ * Two page loads in quick succession each ask for a session, and both can be
+ * in flight before either one's Set-Cookie lands — so the second arrives
+ * holding a token the first has already rotated away. That is one browser
+ * racing itself, not a stolen token being replayed, and treating it as theft
+ * signed people out for navigating quickly.
+ *
+ * A replay this far after the fact is still treated as theft and still kills
+ * the whole chain; the leeway only covers the seconds either side of a
+ * rotation, which is the window a race can occupy.
+ */
+const REUSE_LEEWAY_MS = 30_000;
+
 export type AccessPayload = { sub: string; email: string; exp: number };
 
 /** Pinned explicitly on both sides. Letting the token declare its own algorithm
@@ -83,15 +98,21 @@ export async function rotateSession(rawToken: string, info: RequestInfo): Promis
 
   if (!session) return { ok: false, reason: "unknown" };
 
-  if (session.revokedAt) {
-    await sessions.updateMany(
-      { family: session.family, revokedAt: null },
-      { $set: { revokedAt: new Date() } },
-    );
-    return { ok: false, reason: "reused" };
-  }
-
   if (session.expiresAt.getTime() < Date.now()) return { ok: false, reason: "expired" };
+
+  if (session.revokedAt) {
+    const sinceRotation = Date.now() - session.revokedAt.getTime();
+    if (sinceRotation > REUSE_LEEWAY_MS) {
+      // Long after the fact: someone kept a copy. Kill the chain.
+      await sessions.updateMany(
+        { family: session.family, revokedAt: null },
+        { $set: { revokedAt: new Date() } },
+      );
+      return { ok: false, reason: "reused" };
+    }
+    // Inside the leeway — fall through and issue a fresh token in the same
+    // family, exactly as if this had been the live one.
+  }
 
   const user = await db.collection<User>(USERS).findOne({ _id: session.userId });
   if (!user) return { ok: false, reason: "unknown" };
