@@ -45,6 +45,13 @@ export type Session = {
   ip?: string;
   expiresAt: Date;
   revokedAt?: Date | null;
+  /**
+   * Why it was revoked, which decides whether the rotation leeway applies.
+   * "rotated" is the ordinary case, where a token presented moments later may
+   * still be a page-load race; "reuse" means the chain was deliberately killed
+   * and nothing in it may answer again, however recently.
+   */
+  revokedReason?: "rotated" | "reuse" | "logout";
   createdAt: Date;
 };
 

@@ -102,11 +102,16 @@ export async function rotateSession(rawToken: string, info: RequestInfo): Promis
 
   if (session.revokedAt) {
     const sinceRotation = Date.now() - session.revokedAt.getTime();
-    if (sinceRotation > REUSE_LEEWAY_MS) {
+    // A chain killed for reuse stays dead. Without this the leeway undid the
+    // revocation: the kill revokes every live token in the family, and the
+    // victim's next refresh would arrive moments later, look like a race, and
+    // be handed a working token back.
+    const killed = session.revokedReason === "reuse";
+    if (killed || sinceRotation > REUSE_LEEWAY_MS) {
       // Long after the fact: someone kept a copy. Kill the chain.
       await sessions.updateMany(
-        { family: session.family, revokedAt: null },
-        { $set: { revokedAt: new Date() } },
+        { family: session.family },
+        { $set: { revokedAt: new Date(), revokedReason: "reuse" } },
       );
       return { ok: false, reason: "reused" };
     }
@@ -117,7 +122,10 @@ export async function rotateSession(rawToken: string, info: RequestInfo): Promis
   const user = await db.collection<User>(USERS).findOne({ _id: session.userId });
   if (!user) return { ok: false, reason: "unknown" };
 
-  await sessions.updateOne({ _id: session._id }, { $set: { revokedAt: new Date() } });
+  await sessions.updateOne(
+    { _id: session._id },
+    { $set: { revokedAt: new Date(), revokedReason: "rotated" } },
+  );
   const token = await createSession(session.userId, info, session.family);
   return { ok: true, user, token };
 }
@@ -126,5 +134,8 @@ export async function revokeSession(rawToken: string): Promise<void> {
   const db = await getDb();
   await db
     .collection<Session>(SESSIONS)
-    .updateOne({ tokenHash: hash(rawToken), revokedAt: null }, { $set: { revokedAt: new Date() } });
+    .updateOne(
+      { tokenHash: hash(rawToken), revokedAt: null },
+      { $set: { revokedAt: new Date(), revokedReason: "logout" } },
+    );
 }
