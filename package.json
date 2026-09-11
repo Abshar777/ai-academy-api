@@ -9,6 +9,7 @@
     "import:content": "bun run scripts/import-content.ts",
     "verify:content": "bun run scripts/verify.ts",
     "verify:pairs": "bun run scripts/validate-pairs.ts",
+    "sync:lms": "bun run scripts/sync-from-lms.ts",
     "typecheck": "tsc --noEmit",
     "test:api": "bun run scripts/smoke-test.ts",
     "check:smtp": "bun run scripts/check-smtp.ts",

@@ -1,5 +1,7 @@
 /**
- * Every judgement call the import makes, in one file.
+ * Every judgement call about which English lesson is which Malayalam one, plus
+ * the code that applies them — in one file, so the import and the sync can't
+ * pair content differently.
  *
  * The two source courses were authored independently, so folding them into one
  * bilingual course means deciding which English lesson is the same episode as
@@ -11,6 +13,8 @@
  * on a 74-lesson catalogue would be impossible to review; an explicit list can
  * be checked line by line and argued with.
  */
+
+import type { Lang } from "../src/content/types.ts";
 
 /** Module titles. The exports call all four "module 1".."module 4". */
 export const MODULE_TITLES: { en: string; ml?: string }[] = [
@@ -189,4 +193,194 @@ export function cleanTitle(title: string): string {
  */
 export function looksLikeFilename(cleaned: string): boolean {
   return cleaned.length > 0 && cleaned === cleaned.toLowerCase() && !/[A-Z]/.test(cleaned);
+}
+
+// ─────────────────────────────────────────────────────────────── the pairing
+
+/**
+ * The shape of a course as the LMS hands it over — both `export-course.ts`'s
+ * JSON files and a direct read of the LMS database produce this, so the import
+ * and the sync feed the same pairing.
+ */
+export type SourceLesson = {
+  _id: string;
+  title: string;
+  contentUrl?: string;
+  durationMins?: number;
+  order: number;
+};
+
+export type SourceSection = { _id: string; title: string; order: number; lessons: SourceLesson[] };
+
+export type SourceExport = {
+  course: { title: string; slug: string; description?: string };
+  sections: SourceSection[];
+};
+
+/** An episode after pairing, before it becomes a database document. */
+export type Paired = {
+  key: string;
+  order: number;
+  title: { en: string; ml?: string };
+  source: Partial<Record<Lang, SourceLesson>>;
+  notes: string[];
+  /** Set by the import's report pass: the Malayalam file is almost certainly
+   *  the English one, so it is not written unless --trust-identical is given. */
+  suspectMl?: boolean;
+};
+
+export type PairedModule = {
+  order: number;
+  title: { en: string; ml?: string };
+  paired: Paired[];
+  unconsumed: { lang: Lang; title: string }[];
+};
+
+const droppedTitles = new Map(DROPPED.map((d) => [d.title, d.reason]));
+
+function sortedSections(source: SourceExport): SourceSection[] {
+  return [...source.sections]
+    .sort((a, b) => a.order - b.order)
+    .map((section) => ({
+      ...section,
+      lessons: [...section.lessons].sort((a, b) => a.order - b.order),
+    }));
+}
+
+/**
+ * Modules 1, 2 and 4: both sides number their lessons, so the number is the
+ * pairing key. Aliases redirect the handful of Malayalam lessons that belong to
+ * a numbered episode but were filed under a working filename.
+ */
+function pairByNumber(
+  moduleOrder: number,
+  en: SourceLesson[],
+  ml: SourceLesson[],
+): { paired: Paired[]; unconsumed: { lang: Lang; title: string }[] } {
+  const aliases = new Map(
+    ALIASES.filter((a) => a.moduleOrder === moduleOrder).map((a) => [a.title, a.key]),
+  );
+
+  const byKey = new Map<string, Paired>();
+  const unconsumed: { lang: Lang; title: string }[] = [];
+
+  const place = (lang: Lang, lesson: SourceLesson) => {
+    const aliased = aliases.get(lesson.title);
+    const number = episodeNumber(lesson.title);
+    const key = aliased ?? (number === null ? null : `ep-${number}`);
+
+    if (!key) {
+      unconsumed.push({ lang, title: lesson.title });
+      return;
+    }
+
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = { key, order: 0, title: { en: "" }, source: {}, notes: [] };
+      byKey.set(key, entry);
+    }
+    // First lesson to claim a key wins; a second is a duplicate the DROPPED
+    // list should have caught, so it's surfaced rather than silently ignored.
+    if (entry.source[lang]) {
+      unconsumed.push({ lang, title: lesson.title });
+      return;
+    }
+    entry.source[lang] = lesson;
+    if (aliased) entry.notes.push(`Malayalam filed as "${lesson.title}"`);
+  };
+
+  for (const lesson of en) place("en", lesson);
+  for (const lesson of ml) place("ml", lesson);
+
+  const paired = [...byKey.values()].sort(
+    (a, b) => Number(a.key.slice(3)) - Number(b.key.slice(3)),
+  );
+  paired.forEach((entry, i) => {
+    entry.order = i;
+    const enTitle = entry.source.en ? cleanTitle(entry.source.en.title) : "";
+    const mlTitle = entry.source.ml ? cleanTitle(entry.source.ml.title) : "";
+    entry.title.en = enTitle || mlTitle;
+    if (mlTitle && !looksLikeFilename(mlTitle)) entry.title.ml = mlTitle;
+    else if (mlTitle) entry.notes.push("Malayalam title is a filename — using the English title");
+  });
+
+  return { paired, unconsumed };
+}
+
+/**
+ * Module 3: neither side numbers anything, so the pairing comes from the map
+ * above, matched on exact source titles. Any lesson the map doesn't name is
+ * reported — the map is not allowed to drop content quietly.
+ */
+function pairByTopic(
+  en: SourceLesson[],
+  ml: SourceLesson[],
+): { paired: Paired[]; unconsumed: { lang: Lang; title: string }[] } {
+  const enByTitle = new Map(en.map((l) => [l.title, l]));
+  const mlByTitle = new Map(ml.map((l) => [l.title, l]));
+  const seen = { en: new Set<string>(), ml: new Set<string>() };
+
+  const paired: Paired[] = MODULE_3.map((topic, i) => {
+    const entry: Paired = {
+      key: topic.key,
+      order: i,
+      title: { en: topic.title },
+      source: {},
+      notes: [],
+    };
+
+    for (const lang of ["en", "ml"] as const) {
+      const title = topic[lang];
+      if (!title) continue;
+      const lesson = (lang === "en" ? enByTitle : mlByTitle).get(title);
+      if (!lesson) {
+        entry.notes.push(`map names a ${lang.toUpperCase()} lesson that isn't in the export: "${title}"`);
+        continue;
+      }
+      seen[lang].add(title);
+      entry.source[lang] = lesson;
+    }
+    return entry;
+  });
+
+  const unconsumed: { lang: Lang; title: string }[] = [
+    ...en.filter((l) => !seen.en.has(l.title)).map((l) => ({ lang: "en" as const, title: l.title })),
+    ...ml.filter((l) => !seen.ml.has(l.title)).map((l) => ({ lang: "ml" as const, title: l.title })),
+  ];
+
+  return { paired, unconsumed };
+}
+
+/**
+ * Folds the two source courses into one bilingual set of modules, applying
+ * every rule in this file. The single entry point — both `import-content.ts`
+ * and `sync-from-lms.ts` go through here, so neither can pair content the
+ * other wouldn't.
+ */
+export function pairCourses(
+  enSource: SourceExport,
+  mlSource: SourceExport,
+): { modules: PairedModule[]; dropped: { title: string; reason: string }[] } {
+  const enSections = sortedSections(enSource);
+  const mlSections = sortedSections(mlSource);
+
+  // Set the known-duplicate Malayalam uploads aside before any pairing runs.
+  const dropped: { title: string; reason: string }[] = [];
+  const mlFiltered = mlSections.map((section) => ({
+    ...section,
+    lessons: section.lessons.filter((lesson) => {
+      const reason = droppedTitles.get(lesson.title);
+      if (reason) dropped.push({ title: lesson.title, reason });
+      return !reason;
+    }),
+  }));
+
+  const modules = MODULE_TITLES.map((title, i) => {
+    const en = enSections[i]?.lessons ?? [];
+    const ml = mlFiltered[i]?.lessons ?? [];
+    const { paired, unconsumed } = i === 2 ? pairByTopic(en, ml) : pairByNumber(i, en, ml);
+    return { order: i, title, paired, unconsumed };
+  });
+
+  return { modules, dropped };
 }

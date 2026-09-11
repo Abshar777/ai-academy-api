@@ -6,3 +6,5 @@ node_modules/
 # Course exports carry the source connection string in _meta — never commit them.
 data/
 .cache/
+
+.DS_Store

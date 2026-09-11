@@ -2,49 +2,15 @@
  * Reads back every episode the import wrote and checks that an episode claiming
  * two languages really has two recordings.
  *
- * Correlating the loudness envelopes of the two audio tracks separates them
- * cleanly: two encodes of one take score ~1.0, the same screencast narrated
- * twice scores below 0.2. Anything in between is worth a human ear.
+ * The test itself lives in audio.ts — the sync runs the same one as a gate
+ * before it writes anything, so the two can't disagree.
  */
 import { getDb, closeDb } from "../src/db.ts";
 import { COURSES, MODULES, EPISODES, type Course, type Episode, type Module } from "../src/content/types.ts";
+import { AUDIO_SECONDS, NEEDS_AN_EAR, SAME_RECORDING, compare, verdictFor } from "./audio.ts";
+import { playbackUrl } from "../src/media/r2.ts";
 
-const SECONDS = 60;
-const RATE = 8000;
-const WINDOW = RATE / 10;
 const CONCURRENCY = 4;
-
-async function envelope(url: string): Promise<Float64Array | null> {
-  const proc = Bun.spawn(
-    ["ffmpeg", "-v", "error", "-i", url, "-t", String(SECONDS),
-     "-vn", "-ac", "1", "-ar", String(RATE), "-f", "s16le", "-"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  const [buf] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
-  if (proc.exitCode !== 0 || buf.byteLength === 0) return null;
-  const pcm = new Int16Array(buf);
-  const out = new Float64Array(Math.floor(pcm.length / WINDOW));
-  for (let i = 0; i < out.length; i++) {
-    let sum = 0;
-    for (let j = i * WINDOW; j < (i + 1) * WINDOW; j++) sum += pcm[j]! ** 2;
-    out[i] = Math.sqrt(sum / WINDOW);
-  }
-  return out;
-}
-
-function correlate(a: Float64Array, b: Float64Array): number {
-  const n = Math.min(a.length, b.length);
-  if (n < 10) return NaN;
-  let ma = 0, mb = 0;
-  for (let i = 0; i < n; i++) { ma += a[i]!; mb += b[i]!; }
-  ma /= n; mb /= n;
-  let num = 0, da = 0, db = 0;
-  for (let i = 0; i < n; i++) {
-    const x = a[i]! - ma, y = b[i]! - mb;
-    num += x * y; da += x * x; db += y * y;
-  }
-  return num / Math.sqrt(da * db);
-}
 
 const db = await getDb();
 const course = await db.collection<Course>(COURSES).findOne({ slug: "ai-academy" });
@@ -64,7 +30,7 @@ for (const m of modules) {
 }
 
 console.log(`\n  ${jobs.length} bilingual episodes to check (${single} single-language, skipped)`);
-console.log(`  Comparing ${SECONDS}s of audio per file.\n`);
+console.log(`  Comparing ${AUDIO_SECONDS}s of audio per file.\n`);
 console.log("  " + "EPISODE".padEnd(54) + "r".padStart(7) + "   VERDICT");
 console.log("  " + "".padEnd(86, "─"));
 
@@ -73,23 +39,29 @@ const queue = [...jobs];
 await Promise.all(
   Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
     for (let job = queue.shift(); job; job = queue.shift()) {
-      const [a, b] = await Promise.all([envelope(job.en), envelope(job.ml)]);
-      results.push({ label: job.label, r: a && b ? correlate(a, b) : NaN });
+      // Signed, because the bucket is private — handing ffmpeg the stored URL
+      // gets a 401 and a decode failure that looks like a content problem.
+      const [en, ml] = await Promise.all([playbackUrl(job.en), playbackUrl(job.ml)]);
+      results.push({ label: job.label, r: await compare(en, ml) });
     }
   }),
 );
 
 results.sort((x, y) => y.r - x.r);
-let bad = 0, unsure = 0;
+let bad = 0, unsure = 0, failed = 0;
 for (const { label, r } of results) {
-  const verdict = Number.isNaN(r) ? "decode failed"
-    : r > 0.9 ? "SAME RECORDING — not bilingual"
-    : r > 0.4 ? "unclear — needs an ear"
-    : "two recordings, good";
-  if (r > 0.9) bad++;
-  else if (r > 0.4) unsure++;
+  const verdict = verdictFor(r);
+  if (Number.isNaN(r)) failed++;
+  else if (r > SAME_RECORDING) bad++;
+  else if (r > NEEDS_AN_EAR) unsure++;
   console.log(`  ${label.padEnd(54)}${Number.isNaN(r) ? "—".padStart(7) : r.toFixed(3).padStart(7)}   ${verdict}`);
 }
 
-console.log(`\n  ${results.length - bad - unsure} genuinely bilingual · ${unsure} unclear · ${bad} same-recording\n`);
+console.log(
+  `\n  ${results.length - bad - unsure - failed} genuinely bilingual · ${unsure} unclear · ` +
+    `${bad} same-recording · ${failed} could not be read\n`,
+);
 await closeDb();
+// A file that wouldn't decode was not checked, so this run proves nothing about
+// it — exiting 0 here is how a broken check passes for weeks unnoticed.
+if (bad || unsure || failed) process.exit(1);

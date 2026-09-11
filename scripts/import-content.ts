@@ -15,6 +15,7 @@
 
 import { ObjectId } from "mongodb";
 import { getDb, closeDb } from "../src/db.ts";
+import { playbackUrl } from "../src/media/r2.ts";
 import {
   COURSES,
   MODULES,
@@ -25,47 +26,10 @@ import {
   type Media,
   type Module,
 } from "../src/content/types.ts";
-import {
-  ALIASES,
-  DROPPED,
-  FREE_EPISODES,
-  MODULE_3,
-  MODULE_TITLES,
-  UNCLAIMED,
-  cleanTitle,
-  episodeNumber,
-  looksLikeFilename,
-} from "./pairing.ts";
+import { FREE_EPISODES, UNCLAIMED, pairCourses, type SourceExport } from "./pairing.ts";
 
 const COURSE_SLUG = "ai-academy";
 const CACHE_PATH = new URL("../.cache/durations.json", import.meta.url).pathname;
-
-type SourceLesson = {
-  _id: string;
-  title: string;
-  contentUrl?: string;
-  durationMins?: number;
-  order: number;
-};
-
-type SourceSection = { _id: string; title: string; order: number; lessons: SourceLesson[] };
-
-type SourceExport = {
-  course: { title: string; slug: string; description?: string };
-  sections: SourceSection[];
-};
-
-/** An episode after pairing, before it becomes a database document. */
-type Paired = {
-  key: string;
-  order: number;
-  title: { en: string; ml?: string };
-  source: Partial<Record<Lang, SourceLesson>>;
-  notes: string[];
-  /** Set during the report pass: the Malayalam file is almost certainly the
-   *  English one, so it is not written unless --trust-identical is given. */
-  suspectMl?: boolean;
-};
 
 // ---------------------------------------------------------------- arguments
 
@@ -95,120 +59,6 @@ async function loadExport(path: string, label: string): Promise<SourceExport> {
   return data;
 }
 
-function sortedSections(source: SourceExport): SourceSection[] {
-  return [...source.sections]
-    .sort((a, b) => a.order - b.order)
-    .map((section) => ({ ...section, lessons: [...section.lessons].sort((a, b) => a.order - b.order) }));
-}
-
-// ------------------------------------------------------------------ pairing
-
-const droppedTitles = new Map(DROPPED.map((d) => [d.title, d.reason]));
-
-/**
- * Modules 1, 2 and 4: both sides number their lessons, so the number is the
- * pairing key. Aliases redirect the handful of Malayalam lessons that belong to
- * a numbered episode but were filed under a working filename.
- */
-function pairByNumber(
-  moduleOrder: number,
-  en: SourceLesson[],
-  ml: SourceLesson[],
-): { paired: Paired[]; unconsumed: { lang: Lang; title: string }[] } {
-  const aliases = new Map(
-    ALIASES.filter((a) => a.moduleOrder === moduleOrder).map((a) => [a.title, a.key]),
-  );
-
-  const byKey = new Map<string, Paired>();
-  const unconsumed: { lang: Lang; title: string }[] = [];
-
-  const place = (lang: Lang, lesson: SourceLesson) => {
-    const aliased = aliases.get(lesson.title);
-    const number = episodeNumber(lesson.title);
-    const key = aliased ?? (number === null ? null : `ep-${number}`);
-
-    if (!key) {
-      unconsumed.push({ lang, title: lesson.title });
-      return;
-    }
-
-    let entry = byKey.get(key);
-    if (!entry) {
-      entry = { key, order: 0, title: { en: "" }, source: {}, notes: [] };
-      byKey.set(key, entry);
-    }
-    // First lesson to claim a key wins; a second is a duplicate the DROPPED
-    // list should have caught, so it's surfaced rather than silently ignored.
-    if (entry.source[lang]) {
-      unconsumed.push({ lang, title: lesson.title });
-      return;
-    }
-    entry.source[lang] = lesson;
-    if (aliased) entry.notes.push(`Malayalam filed as "${lesson.title}"`);
-  };
-
-  for (const lesson of en) place("en", lesson);
-  for (const lesson of ml) place("ml", lesson);
-
-  const paired = [...byKey.values()].sort(
-    (a, b) => Number(a.key.slice(3)) - Number(b.key.slice(3)),
-  );
-  paired.forEach((entry, i) => {
-    entry.order = i;
-    const enTitle = entry.source.en ? cleanTitle(entry.source.en.title) : "";
-    const mlTitle = entry.source.ml ? cleanTitle(entry.source.ml.title) : "";
-    entry.title.en = enTitle || mlTitle;
-    if (mlTitle && !looksLikeFilename(mlTitle)) entry.title.ml = mlTitle;
-    else if (mlTitle) entry.notes.push("Malayalam title is a filename — using the English title");
-  });
-
-  return { paired, unconsumed };
-}
-
-/**
- * Module 3: neither side numbers anything, so the pairing comes from the map in
- * pairing.ts, matched on exact source titles. Any lesson the map doesn't name is
- * reported — the map is not allowed to drop content quietly.
- */
-function pairByTopic(
-  en: SourceLesson[],
-  ml: SourceLesson[],
-): { paired: Paired[]; unconsumed: { lang: Lang; title: string }[] } {
-  const enByTitle = new Map(en.map((l) => [l.title, l]));
-  const mlByTitle = new Map(ml.map((l) => [l.title, l]));
-  const seen = { en: new Set<string>(), ml: new Set<string>() };
-
-  const paired: Paired[] = MODULE_3.map((topic, i) => {
-    const entry: Paired = {
-      key: topic.key,
-      order: i,
-      title: { en: topic.title },
-      source: {},
-      notes: [],
-    };
-
-    for (const lang of ["en", "ml"] as const) {
-      const title = topic[lang];
-      if (!title) continue;
-      const lesson = (lang === "en" ? enByTitle : mlByTitle).get(title);
-      if (!lesson) {
-        entry.notes.push(`map names a ${lang.toUpperCase()} lesson that isn't in the export: "${title}"`);
-        continue;
-      }
-      seen[lang].add(title);
-      entry.source[lang] = lesson;
-    }
-    return entry;
-  });
-
-  const unconsumed: { lang: Lang; title: string }[] = [
-    ...en.filter((l) => !seen.en.has(l.title)).map((l) => ({ lang: "en" as const, title: l.title })),
-    ...ml.filter((l) => !seen.ml.has(l.title)).map((l) => ({ lang: "ml" as const, title: l.title })),
-  ];
-
-  return { paired, unconsumed };
-}
-
 // ---------------------------------------------------------------- durations
 
 /**
@@ -217,14 +67,18 @@ function pairByTopic(
  * read out of each file's container. ffprobe fetches only the header it needs,
  * not the whole video, but 60-odd HTTPS round trips still add up, so results
  * are cached between runs.
+ *
+ * The URL is signed first: the bucket is private, and ffprobe against the
+ * stored URL gets a 401 that reads as "no duration" and writes a zero.
  */
 async function probeDuration(url: string): Promise<number | null> {
+  const signed = await playbackUrl(url);
   const proc = Bun.spawn(
     [
       "ffprobe", "-v", "error",
       "-show_entries", "format=duration",
       "-of", "default=noprint_wrappers=1:nokey=1",
-      "-i", url,
+      "-i", signed,
     ],
     { stdout: "pipe", stderr: "pipe" },
   );
@@ -299,29 +153,12 @@ async function main() {
     loadExport(mlPath, "Malayalam"),
   ]);
 
-  const enSections = sortedSections(enSource);
-  const mlSections = sortedSections(mlSource);
+  const lessonCount = (source: SourceExport) =>
+    source.sections.reduce((n, section) => n + section.lessons.length, 0);
+  console.log(`\n  English   ${enSource.course.title}  (${lessonCount(enSource)} lessons)`);
+  console.log(`  Malayalam ${mlSource.course.title}  (${lessonCount(mlSource)} lessons)\n`);
 
-  console.log(`\n  English   ${enSource.course.title}  (${enSections.reduce((n, s) => n + s.lessons.length, 0)} lessons)`);
-  console.log(`  Malayalam ${mlSource.course.title}  (${mlSections.reduce((n, s) => n + s.lessons.length, 0)} lessons)\n`);
-
-  // Set the known-duplicate Malayalam uploads aside before any pairing runs.
-  const dropped: { title: string; reason: string }[] = [];
-  const mlFiltered = mlSections.map((section) => ({
-    ...section,
-    lessons: section.lessons.filter((lesson) => {
-      const reason = droppedTitles.get(lesson.title);
-      if (reason) dropped.push({ title: lesson.title, reason });
-      return !reason;
-    }),
-  }));
-
-  const modules = MODULE_TITLES.map((title, i) => {
-    const en = enSections[i]?.lessons ?? [];
-    const ml = mlFiltered[i]?.lessons ?? [];
-    const { paired, unconsumed } = i === 2 ? pairByTopic(en, ml) : pairByNumber(i, en, ml);
-    return { order: i, title, paired, unconsumed };
-  });
+  const { modules, dropped } = pairCourses(enSource, mlSource);
 
   const urls = [
     ...new Set(
