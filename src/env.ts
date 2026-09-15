@@ -44,6 +44,14 @@ export const env = {
   /** Set to ".deltaaiacademy.ai" in production so the API subdomain and the
    *  site share the refresh cookie. Unset locally, where the two are different
    *  ports on localhost and a Domain would break the cookie entirely. */
+  /* Sign-in code limits. Defaults are deliberately forgiving: the failure they
+     used to cause — a real buyer locked out for ten minutes after three taps —
+     is worse than the abuse they prevent, and the per-IP ceiling still stands
+     between this and bulk enumeration. Raise or lower without a deploy. */
+  otpEmailMax: () => Number(process.env.OTP_EMAIL_MAX ?? 10),
+  otpIpMax: () => Number(process.env.OTP_IP_MAX ?? 40),
+  otpWindowMs: () => Number(process.env.OTP_WINDOW_MINUTES ?? 10) * 60_000,
+
   cookieDomain: () => process.env.COOKIE_DOMAIN || undefined,
 
   isProduction: () => process.env.NODE_ENV === "production",

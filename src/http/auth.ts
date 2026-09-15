@@ -137,22 +137,27 @@ export const authRoutes = new Hono();
  *
  * Answers the same way whether or not the address has an account — otherwise
  * this endpoint becomes a way to test which of a list of emails are customers.
- * Two limits apply: a tight one per address, so nobody's inbox can be used as a
- * weapon, and a looser one per IP to blunt bulk enumeration.
+ * Two limits apply: one per address, so nobody's inbox can be used as a weapon,
+ * and a looser one per IP to blunt bulk enumeration.
+ *
+ * Both are tunable (OTP_EMAIL_MAX / OTP_IP_MAX / OTP_WINDOW_MINUTES). The
+ * per-address default used to be 3 in 10 minutes, which is fewer taps than a
+ * person gives it when the first code lands in spam — they hit the wall while
+ * doing nothing wrong, and the wall is silent for ten minutes.
  */
 authRoutes.post("/otp/request", async (c) => {
   const body = await c.req.json().catch(() => null);
   const email = normalizeEmail(String(body?.email ?? ""));
   if (!looksLikeEmail(email)) return c.json({ error: "Enter a valid email address" }, 400);
 
-  const perEmail = rateLimit(`otp:email:${email}`, 3, 10 * 60_000);
+  const perEmail = rateLimit(`otp:email:${email}`, env.otpEmailMax(), env.otpWindowMs());
   if (!perEmail.allowed) {
     return c.json(
       { error: "Too many codes requested. Try again shortly.", retryAfterSeconds: perEmail.retryAfterSeconds },
       429,
     );
   }
-  const perIp = rateLimit(`otp:ip:${clientIp(c)}`, 20, 10 * 60_000);
+  const perIp = rateLimit(`otp:ip:${clientIp(c)}`, env.otpIpMax(), env.otpWindowMs());
   if (!perIp.allowed) {
     return c.json(
       { error: "Too many requests. Try again shortly.", retryAfterSeconds: perIp.retryAfterSeconds },
