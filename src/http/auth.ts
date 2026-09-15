@@ -94,7 +94,28 @@ function maybeNotifyDeviceRequest(buyerEmail: string, outcome: DeviceOutcome): v
  * requests between them are same-site and the cookie rides along. Locally the
  * two are ports on localhost, which is likewise same-site.
  */
+/**
+ * Drops a same-named cookie scoped to this host alone.
+ *
+ * Anything set before COOKIE_DOMAIN was configured carries no Domain, so it
+ * belongs to api.deltaaiacademy.ai rather than the parent domain. Deleting the
+ * parent-domain cookie does not touch it — same name, different scope — and the
+ * browser sends BOTH on every request. The server reads one of the two, and
+ * when that was the stale one every refresh failed on a token that had already
+ * been replaced, then cleared only the good cookie on its way out. Sign in,
+ * reload, sign in again, for as long as the old cookie survived: forever,
+ * because nothing could reach it.
+ *
+ * Emitted alongside the real Set-Cookie. Two headers, two scopes, one left
+ * standing.
+ */
+function evictHostOnlyTwin(c: Parameters<typeof deleteCookie>[0], name: string) {
+  if (!env.cookieDomain()) return; // host-only IS the real cookie; nothing to evict
+  deleteCookie(c, name, { path: "/" });
+}
+
 function setRefreshCookie(c: Parameters<typeof setCookie>[0], token: string) {
+  for (const name of [REFRESH_COOKIE, HINT_COOKIE]) evictHostOnlyTwin(c, name);
   setCookie(c, REFRESH_COOKIE, token, {
     httpOnly: true,
     secure: env.isProduction(),
@@ -116,6 +137,9 @@ function setRefreshCookie(c: Parameters<typeof setCookie>[0], token: string) {
 function clearAuthCookies(c: Parameters<typeof deleteCookie>[0]) {
   for (const name of [REFRESH_COOKIE, HINT_COOKIE]) {
     deleteCookie(c, name, { path: "/", domain: env.cookieDomain() });
+    // Clearing only the parent-domain cookie is what let the stale twin outlive
+    // every sign-out and poison the next session.
+    evictHostOnlyTwin(c, name);
   }
 }
 
