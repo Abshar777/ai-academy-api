@@ -69,6 +69,50 @@ export function keyFromUrl(url: string): string | null {
   return key;
 }
 
+/** The bucket endpoint for a key, virtual-hosted style. */
+function objectEndpoint(key: string): { url: string; encodedKey: string } {
+  const config = env.r2();
+  if (!config) throw new Error("R2 is not configured");
+  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
+  return {
+    encodedKey,
+    url: `https://${config.bucket}.${config.accountId}.r2.cloudflarestorage.com/${encodedKey}`,
+  };
+}
+
+/**
+ * Stores an object and returns the URL it can be read back from.
+ *
+ * Used for blog images, which are public by nature: a reader's browser fetches
+ * them straight off the bucket's public hostname with no signing involved. That
+ * is also the one caveat — if public access on the bucket is ever turned off
+ * (see the note above and in the README), these stop resolving and would need
+ * serving through a signed or proxied route instead. Course video, which is the
+ * thing worth protecting, is unaffected either way: it is signed on every play.
+ */
+export async function putObject(
+  key: string,
+  body: ArrayBuffer,
+  contentType: string,
+): Promise<string> {
+  const config = env.r2();
+  const aws = getClient();
+  if (!config || !aws) throw new Error("R2 is not configured");
+
+  const { url, encodedKey } = objectEndpoint(key);
+  const response = await aws.fetch(url, {
+    method: "PUT",
+    body,
+    headers: { "Content-Type": contentType },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`R2 rejected the upload (${response.status}) ${detail}`.trim());
+  }
+  return `${config.publicUrl}/${encodedKey}`;
+}
+
 /** A presigned GET, valid for `ttlSeconds`. */
 export async function signGetUrl(key: string, ttlSeconds: number): Promise<string> {
   const config = env.r2();
@@ -78,8 +122,7 @@ export async function signGetUrl(key: string, ttlSeconds: number): Promise<strin
   // Virtual-hosted style — bucket as a subdomain — matching what the LMS's
   // AWS SDK produces for the same object. R2 accepts path style too, but
   // keeping one form across both services means one thing to reason about.
-  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
-  const endpoint = `https://${config.bucket}.${config.accountId}.r2.cloudflarestorage.com/${encodedKey}`;
+  const { url: endpoint } = objectEndpoint(key);
 
   const signed = await aws.sign(
     new Request(`${endpoint}?X-Amz-Expires=${ttlSeconds}`, { method: "GET" }),

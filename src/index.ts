@@ -6,6 +6,7 @@ import { ensureIndexes } from "./indexes.ts";
 import { authRoutes } from "./http/auth.ts";
 import { courseRoutes } from "./http/courses.ts";
 import { internalRoutes } from "./http/internal.ts";
+import { mediaRoutes } from "./http/media.ts";
 import { meRoutes } from "./http/me.ts";
 import { progressRoutes } from "./http/progress.ts";
 
@@ -49,6 +50,7 @@ app.get("/health", async (c) => {
 
 app.route("/auth", authRoutes);
 app.route("/internal", internalRoutes);
+app.route("/", mediaRoutes);
 app.route("/", meRoutes);
 app.route("/", courseRoutes);
 app.route("/", progressRoutes);
