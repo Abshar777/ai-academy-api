@@ -117,3 +117,6 @@ export const OTPS = "otps";
 export const SESSIONS = "sessions";
 export const ENTITLEMENTS = "entitlements";
 export const DEVICES = "devices";
+/** Shared with the marketing site's admin panel, which writes the device
+ *  whitelist settings this API reads — see auth/device-settings.ts. */
+export const SETTINGS = "settings";

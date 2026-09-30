@@ -1,9 +1,11 @@
 import { ObjectId } from "mongodb";
 import { getDb } from "../db.ts";
 import { DEVICES, type Device } from "./types.ts";
+import { deviceSettings } from "./device-settings.ts";
 
-/** How many devices a buyer may have approved at once. The first is their main;
- *  the second needs an admin's approval; a third is refused until a slot frees. */
+/** The fallback ceiling, used when no setting has been written. The live value
+ *  comes from the database so an admin can change it without a deploy — see
+ *  device-settings.ts. */
 export const MAX_APPROVED_DEVICES = 2;
 
 export type DeviceOutcome =
@@ -54,20 +56,37 @@ export async function resolveDeviceForLogin(
   const devices = db.collection<Device>(DEVICES);
   const now = new Date();
 
+  const settings = await deviceSettings();
+
   const existing = await devices.findOne({ userId, deviceId });
   if (existing) {
+    // Revoked stays revoked, whatever the setting says. Turning the limit off
+    // means "stop counting devices", not "forgive the one an admin threw out".
     if (existing.status === "revoked") return { ok: false, reason: "revoked" };
     await devices.updateOne(
       { _id: existing._id },
       { $set: { lastSeenAt: now, userAgent: info.userAgent, ip: info.ip } },
     );
     if (existing.status === "approved") return { ok: true, device: existing };
+    if (!settings.enabled) {
+      // Was waiting on an admin who is no longer being asked. Promote it rather
+      // than letting it sign in on a row that still reads "pending", so the
+      // list stays honest and the device survives the limit being switched on.
+      await devices.updateOne(
+        { _id: existing._id },
+        { $set: { status: "approved", approvedAt: now, approvedBy: "device-limit-off" } },
+      );
+      return { ok: true, device: { ...existing, status: "approved" } };
+    }
     return { ok: false, reason: "pending", created: false, label: existing.label ?? "Unknown device" };
   }
 
   const approvedCount = await devices.countDocuments({ userId, status: "approved" });
+  // With the limit off every new browser is its own main device; with it on,
+  // only the very first is.
   const isFirst = approvedCount === 0;
-  const status: Device["status"] = isFirst ? "approved" : "pending";
+  const autoApprove = isFirst || !settings.enabled;
+  const status: Device["status"] = autoApprove ? "approved" : "pending";
 
   const device: Device = {
     userId,
@@ -78,7 +97,7 @@ export async function resolveDeviceForLogin(
     userAgent: info.userAgent,
     ip: info.ip,
     createdAt: now,
-    approvedAt: isFirst ? now : null,
+    approvedAt: autoApprove ? now : null,
     approvedBy: null,
     lastSeenAt: now,
   };
@@ -98,11 +117,11 @@ export async function resolveDeviceForLogin(
     throw err;
   }
 
-  if (isFirst) return { ok: true, device };
+  if (autoApprove) return { ok: true, device };
   // A brand-new device beyond the first: pending if a slot is open, otherwise
   // reported as a hard limit (the row still exists for the admin to see).
   // `created: true` — this sign-in first recorded it, so notify admins once.
-  return approvedCount >= MAX_APPROVED_DEVICES
+  return approvedCount >= settings.maxApproved
     ? { ok: false, reason: "limit", created: true, label: device.label ?? "Unknown device" }
     : { ok: false, reason: "pending", created: true, label: device.label ?? "Unknown device" };
 }
@@ -115,9 +134,17 @@ export async function resolveDeviceForLogin(
 export async function isDeviceApproved(userId: ObjectId, deviceId: string): Promise<boolean> {
   if (!deviceId) return false;
   const db = await getDb();
-  const device = await db.collection<Device>(DEVICES).findOne({ userId, deviceId, status: "approved" });
-  if (device) {
-    await db.collection<Device>(DEVICES).updateOne({ _id: device._id }, { $set: { lastSeenAt: new Date() } });
-  }
-  return device !== null;
+  const devices = db.collection<Device>(DEVICES);
+  const device = await devices.findOne({ userId, deviceId });
+  if (device) await devices.updateOne({ _id: device._id }, { $set: { lastSeenAt: new Date() } });
+
+  // Revoked ends the session either way — that is the one decision the switch
+  // does not override.
+  if (device?.status === "revoked") return false;
+  if (device?.status === "approved") return true;
+
+  // Pending, or a browser with no row at all. With the limit off neither is a
+  // reason to drop a live session; with it on, both are.
+  const settings = await deviceSettings();
+  return !settings.enabled;
 }

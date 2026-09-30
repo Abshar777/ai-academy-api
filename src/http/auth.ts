@@ -42,6 +42,11 @@ function resolveDeviceId(c: Parameters<typeof setCookie>[0]): string {
   const existing = getCookie(c, DEVICE_COOKIE);
   if (existing) return existing;
   const deviceId = randomToken();
+  // Same twin problem the refresh cookie had, and with worse manners: two
+  // da_device cookies at different scopes means the browser sends both and the
+  // server reads whichever comes first, so one browser can present two
+  // identities and be asked to be approved all over again.
+  evictHostOnlyTwin(c, DEVICE_COOKIE);
   setCookie(c, DEVICE_COOKIE, deviceId, {
     httpOnly: true,
     secure: env.isProduction(),
