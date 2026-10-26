@@ -9,6 +9,7 @@ import { upsertUserByEmail } from "../auth/users.ts";
 import { looksLikeEmail, normalizeEmail } from "../auth/crypto.ts";
 import type { Entitlement } from "../auth/types.ts";
 import { isR2Configured, putObject } from "../media/r2.ts";
+import { contentAdminRoutes } from "./content-admin.ts";
 
 /** The course a purchase on the marketing site buys. One programme today; the
  *  caller can name a different slug if that changes. */
@@ -53,6 +54,10 @@ internalRoutes.use("*", async (c, next) => {
   }
   await next();
 });
+
+/** Course editing — rename, reorder, repoint a video. Mounted here rather
+ *  than in index.ts so it sits behind the same shared secret. */
+internalRoutes.route("/", contentAdminRoutes);
 
 /**
  * Turns a completed payment into an account and access to the course.
