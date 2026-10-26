@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { ObjectId } from "mongodb";
 import { getDb } from "../db.ts";
+import { playbackUrl } from "../media/r2.ts";
 import {
   COURSES,
   MODULES,
@@ -262,4 +263,29 @@ contentAdminRoutes.post("/content/modules/reorder", async (c) => {
   const outcome = await applyOrder(MODULES, body?.moduleIds, { courseId: course._id });
   if ("error" in outcome) return c.json(outcome, 400);
   return c.json({ ok: true, updated: outcome.count });
+});
+
+/**
+ * A short-lived signed URL so the admin can watch a video before saving it.
+ *
+ * The stored `url` is the archive location in a private bucket — fetching it
+ * directly answers 401 with an HTML error page, which a <video> element
+ * reports as "format error" rather than anything that points at the cause.
+ * Students never hit this because /episodes/:id/play signs first; the admin
+ * needs the same treatment.
+ *
+ * Takes a URL rather than an episode id on purpose. The point of previewing
+ * is to check a link that has been pasted in and not yet committed, and an
+ * id can only ever resolve to what is already saved.
+ */
+contentAdminRoutes.post("/content/preview", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const url = typeof body?.url === "string" ? body.url.trim() : "";
+  if (!url) return c.json({ error: "No URL given." }, 400);
+
+  // Only ever signs; it cannot be pointed at something outside the bucket,
+  // because keyFromUrl returns nothing for a URL that isn't ours and
+  // playbackUrl then hands back the original unchanged.
+  const signed = await playbackUrl(url);
+  return c.json({ url: signed, signed: signed !== url });
 });
