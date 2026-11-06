@@ -1,5 +1,6 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "../env.ts";
+import { logEmail, type EmailKind } from "./log.ts";
 
 /**
  * Shares the marketing site's SMTP credentials and visual shell, so a sign-in
@@ -44,12 +45,23 @@ type Msg = { to: string; subject: string; html: string; text: string };
  * decides what to tell the recipient (sign-in flows never surface a mail
  * failure as an error).
  */
-async function deliver(msg: Msg, label: string): Promise<{ sent: boolean }> {
+async function deliver(msg: Msg, label: string, kind: EmailKind): Promise<{ sent: boolean }> {
   const boxes = getMailboxes();
   if (!boxes.length) {
     console.warn(`[mailer] SMTP not configured — ${label} not sent to`, msg.to);
+    await logEmail({
+      kind,
+      to: msg.to,
+      subject: msg.subject,
+      status: "skipped",
+      error: "SMTP not configured",
+      bodyHtml: msg.html,
+    });
     return { sent: false };
   }
+  // Each mailbox's last error, so a row that reports total failure says what
+  // every attempt actually said rather than only the final one.
+  const failures: string[] = [];
   for (const box of boxes) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -57,14 +69,37 @@ async function deliver(msg: Msg, label: string): Promise<{ sent: boolean }> {
         if (box.name !== "primary" || attempt > 1) {
           console.info(`[mailer] ${label} sent via ${box.name} (attempt ${attempt})`);
         }
+        await logEmail({
+          kind,
+          to: msg.to,
+          subject: msg.subject,
+          status: "sent",
+          mailbox: box.from,
+          bodyHtml: msg.html,
+          // A first-attempt primary send is the normal case and says nothing
+          // worth keeping; anything else is why the log is here.
+          ...(box.name === "primary" && attempt === 1
+            ? {}
+            : { error: `recovered on ${box.name}, attempt ${attempt}${failures.length ? ` — after: ${failures.join("; ")}` : ""}` }),
+        });
         return { sent: true };
       } catch (err) {
-        console.error(`[mailer] ${label} via ${box.name} failed (attempt ${attempt}):`, (err as Error)?.message ?? err);
+        const message = (err as Error)?.message ?? String(err);
+        failures.push(`${box.name} #${attempt}: ${message}`);
+        console.error(`[mailer] ${label} via ${box.name} failed (attempt ${attempt}):`, message);
         if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
       }
     }
   }
   console.error(`[mailer] ${label} — all mailboxes failed for`, msg.to);
+  await logEmail({
+    kind,
+    to: msg.to,
+    subject: msg.subject,
+    status: "failed",
+    error: failures.join("; "),
+    bodyHtml: msg.html,
+  });
   return { sent: false };
 }
 
@@ -113,6 +148,7 @@ export async function sendLoginLink(email: string, link: string): Promise<{ sent
       text: `Sign in to Delta AI Academy: ${link}`,
     },
     "login link",
+    "login-link",
   );
 }
 
@@ -144,6 +180,7 @@ export async function sendDeviceApprovalRequest(
       text: `${buyerEmail} is waiting for approval on a second device (${deviceLabel}).${reviewUrl ? ` Review: ${reviewUrl}` : ""}`,
     },
     "device-approval notice",
+    "device-approval",
   );
 }
 
@@ -162,5 +199,6 @@ export async function sendSignInCode(email: string, code: string): Promise<{ sen
       text: `Your Delta AI Academy sign-in code is ${code}. It expires in 10 minutes.`,
     },
     "sign-in code",
+    "sign-in-code",
   );
 }
